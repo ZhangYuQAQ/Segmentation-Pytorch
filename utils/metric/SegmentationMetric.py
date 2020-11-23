@@ -22,16 +22,17 @@ class SegmentationMetric(object):
         acc = np.diag(self.confusionMatrix).sum() /  self.confusionMatrix.sum()
         return acc
 
-    def classPixelAccuracy(self):
+    def meanPixelAccuracy(self):
         # return each category pixel accuracy(A more accurate way to call it precision)
         # acc = (TP) / TP + FP
         classAcc = np.diag(self.confusionMatrix) / self.confusionMatrix.sum(axis=1)
-        return classAcc # 返回的是一个列表值，如：[0.90, 0.80, 0.96]，表示类别1 2 3各类别的预测准确率
+        classAcc_set = {}
+        classAcc = np.around(classAcc, decimals=4)
+        for index, per in enumerate(classAcc):
+            classAcc_set[index] = per
+        meanAcc = np.nanmean(classAcc)  # 求各类别IoU的平均
+        return meanAcc, classAcc_set  # 返回的是一个列表值，如：[0.90, 0.80, 0.96]，表示类别1 2 3各类别的预测准确率
 
-    def meanPixelAccuracy(self):
-        classAcc = self.classPixelAccuracy()
-        meanAcc = np.nanmean(classAcc) # np.nanmean 求平均值，nan表示遇到Nan类型，其值取为0
-        return meanAcc # 返回单个值，如：np.nanmean([0.90, 0.80, 0.96, nan, nan]) = (0.90 + 0.80 + 0.96） / 3 =  0.89
 
     def meanIntersectionOverUnion(self):
         # Intersection = TP ;Union = TP + FP + FN

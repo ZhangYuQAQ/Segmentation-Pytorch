@@ -93,7 +93,6 @@ def predict_sliding(args, model, testLoader, tile_size, criteria, mode='predict'
                      output_grey=False, output_color=True, gt_color=True)
 
     pa = metric.pixelAccuracy()
-    # cpa = metric.classPixelAccuracy()
     mpa, cpa = metric.meanPixelAccuracy()
     Miou, PerMiou_set = metric.meanIntersectionOverUnion()
     FWIoU = metric.Frequency_Weighted_Intersection_over_Union()
