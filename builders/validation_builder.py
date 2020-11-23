@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-import torch.nn as nn
+import matplotlib.pyplot as plt
 from scipy import ndimage
 from math import ceil
 from tqdm import tqdm
@@ -34,8 +34,8 @@ def predict_sliding(args, model, testLoader, tile_size, criteria, mode='predict'
     val_loss = 0
     metric = SegmentationMetric(args.classes)  # args.classes表示有args.classes个分类
     pbar = tqdm(iterable=enumerate(testLoader), total=total_batches, desc='Predicting')
-    for i, (input, gt, size, name) in pbar:
-        image_size = input.shape  # (1,3,3328,3072)
+    for i, (image, gt, size, name) in pbar:
+        image_size = image.shape  # (1,3,3328,3072)
         overlap = 1 / 3  # 每次滑动的覆盖率为1/3
         stride = ceil(tile_size[0] * (1 - overlap))  # 滑动步长:512*(1-1/3) = 513     512*(1-1/3)= 342
         tile_rows = int(ceil((image_size[2] - tile_size[0]) / stride) + 1)  # 行滑动步数:(3072-512)/342+1=9
@@ -52,7 +52,7 @@ def predict_sliding(args, model, testLoader, tile_size, criteria, mode='predict'
                 x1 = max(int(x2 - tile_size[1]), 0)  # 重新校准起始位置x1 = max(512-512, 0)
                 y1 = max(int(y2 - tile_size[0]), 0)  # y1 = max(512-512, 0)
 
-                img = input[:, :, y1:y2, x1:x2]  # 滑动窗口对应的图像 imge[:, :, 0:512, 0:512]
+                img = image[:, :, y1:y2, x1:x2]  # 滑动窗口对应的图像 imge[:, :, 0:512, 0:512]
                 label = gt[:, y1:y2, x1:x2]
                 padded_img = pad_image(img, tile_size)  # padding 确保扣下来的图像为512*512
                 padded_label = pad_label(label, tile_size)
@@ -61,8 +61,8 @@ def predict_sliding(args, model, testLoader, tile_size, criteria, mode='predict'
 
                 # 将扣下来的部分传入网络，网络输出概率图。
                 with torch.no_grad():
-                    input_var = torch.from_numpy(padded_img).cuda().float()
-                    padded_prediction = model(input_var)
+                    image_var = torch.from_numpy(padded_img).cuda().float()
+                    padded_prediction = model(image_var)
                     if type(padded_prediction) is tuple:
                         padded_prediction = padded_prediction[0]
                     torch.cuda.synchronize()
@@ -84,15 +84,17 @@ def predict_sliding(args, model, testLoader, tile_size, criteria, mode='predict'
         # plt.show()
         full_probs = np.asarray(np.argmax(full_probs, axis=2), dtype=np.uint8)
         '''设置输出原图和预测图片的颜色灰度还是彩色'''
-        gt = gt[0].numpy()
+        # plt.imshow(gt[0])
+        # plt.show()
+        gt = gt[0].numpy()  # gt shape is (batch_size, h, w)
         # 计算miou
         metric.addBatch(full_probs, gt)
         save_predict(full_probs, gt, name[0], args.dataset, args.save_seg_dir,
                      output_grey=False, output_color=True, gt_color=True)
 
     pa = metric.pixelAccuracy()
-    cpa = metric.classPixelAccuracy()
-    mpa = metric.meanPixelAccuracy()
+    # cpa = metric.classPixelAccuracy()
+    mpa, cpa = metric.meanPixelAccuracy()
     Miou, PerMiou_set = metric.meanIntersectionOverUnion()
     FWIoU = metric.Frequency_Weighted_Intersection_over_Union()
 
@@ -101,24 +103,40 @@ def predict_sliding(args, model, testLoader, tile_size, criteria, mode='predict'
         f.write(str(Miou))
         f.write('\n{}'.format(PerMiou_set))
 
-    return val_loss, FWIoU, Miou, PerMiou_set
+    return val_loss, FWIoU, Miou, PerMiou_set, pa, cpa, mpa
 
 
 # model output is feature map without Up sampling
-def predict_whole(model, image, tile_size):
+def predict_whole(args, model, testLoader, tile_size, criteria, mode='predict'):
     """
     model:  model
     image:  test image
     tile_size:  predict output image size
     return:  predict output
     """
-    image = torch.from_numpy(image)
-    interp = nn.Upsample(size=tile_size, mode='bilinear', align_corners=True)
-    prediction = model(image.cuda())
-    if isinstance(prediction, list):
-        prediction = prediction[0]
-    prediction = interp(prediction).cpu().data[0].numpy().transpose(1, 2, 0)
-    return prediction
+    total_batches = len(testLoader)
+    val_loss = 0
+    metric = SegmentationMetric(args.classes)  # args.classes表示有args.classes个分类
+    pbar = tqdm(iterable=enumerate(testLoader), total=total_batches, desc='Predicting')
+    for i, (image, gt, size, name) in pbar:
+        with torch.no_grad():
+            image = torch.from_numpy(image)
+            predict = model(image.cuda())
+            if mode == 'validation':
+                gt = torch.from_numpy(gt[0]).long().cuda()
+                val_loss = criteria(predict, gt).cuda()
+
+            save_predict(predict, gt, name[0], args.dataset, args.save_seg_dir,
+                         output_grey=False, output_color=True, gt_color=True)
+
+            metric.addBatch(predict, gt)
+            pa = metric.pixelAccuracy()
+            cpa = metric.classPixelAccuracy()
+            mpa = metric.meanPixelAccuracy()
+            Miou, PerMiou_set = metric.meanIntersectionOverUnion()
+            FWIoU = metric.Frequency_Weighted_Intersection_over_Union()
+
+    return val_loss, FWIoU, Miou, PerMiou_set, pa, cpa, mpa
 
 
 def predict_multiscale(model, image, tile_size, scales, classes, flip_evaluation):
