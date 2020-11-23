@@ -1,64 +1,14 @@
 import os
 import torch
-import numpy as np
 import torch.backends.cudnn as cudnn
 from argparse import ArgumentParser
-# user
 from builders.model_builder import build_model
 from builders.dataset_builder import build_dataset_test
-from utils.utils import save_predict
-from utils.metric.SegmentationMetric import SegmentationMetric
-from tqdm import tqdm
-from utils.convert_state import convert_state_dict
+from builders.loss_builder import build_loss
+from builders.validation_builder import predict_whole, predict_sliding, predict_multiscale
 
 
-def predict(args, test_loader, model):
-    """
-    args:
-      test_loader: loaded for test dataset, for those that do not provide label on the test set
-      model: model
-    return: class IoU and mean IoU
-    """
-    # evaluation or test mode
-    model.eval()
-    total_batches = len(test_loader)
-
-    metric = SegmentationMetric(numClass=args.classes)
-    pbar = tqdm(iterable=enumerate(test_loader), total=total_batches, desc='Valing')
-    for i, (input, gt, size, name) in pbar:
-        with torch.no_grad():
-            input_var = input.cuda()
-
-        output = model(input_var)
-        if type(output) is tuple:
-            output = output[0]
-        torch.cuda.synchronize()
-
-        output = output.cpu().data[0].numpy()
-        output = output.transpose(1, 2, 0)
-        output = np.asarray(np.argmax(output, axis=2), dtype=np.uint8)
-        gt = np.asarray(gt[0], dtype=np.uint8)
-
-        # 计算miou
-        metric.addBatch(imgPredict=output.flatten(), imgLabel=gt.flatten())
-
-        # save the predicted image
-        save_predict(output, gt, name[0], args.dataset, args.save_seg_dir,
-                         output_grey=False, output_color=True, gt_color=True)
-
-    pa = metric.pixelAccuracy()
-    cpa = metric.classPixelAccuracy()
-    mpa = metric.meanPixelAccuracy()
-    Miou, PerMiou_set = metric.meanIntersectionOverUnion()
-    FWIoU = metric.Frequency_Weighted_Intersection_over_Union()
-    print('miou {}\nclass iou {}'.format(Miou, PerMiou_set))
-    result = args.save_seg_dir + '/results.txt'
-    with open(result, 'w') as f:
-        f.write(str(Miou))
-        f.write('\n{}'.format(PerMiou_set))
-
-
-def test_model(args):
+def main(args):
     """
      main function for testing
      param args: global arguments
@@ -66,24 +16,22 @@ def test_model(args):
     """
     print(args)
 
-    if args.cuda:
-        print("use gpu id: '{}'".format(args.gpus))
-        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
-        if not torch.cuda.is_available():
-            raise Exception("no GPU found or wrong gpu id, please run without --cuda")
-
     # build the model
     model = build_model(args.model, num_classes=args.classes)
 
     if args.cuda:
+        print("use gpu id: '{}'".format(args.gpus))
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
         model = model.cuda()  # using GPU for inference
         cudnn.benchmark = True
+        if not torch.cuda.is_available():
+            raise Exception("no GPU found or wrong gpu id, please run without --cuda")
 
     if not os.path.exists(args.save_seg_dir):
         os.makedirs(args.save_seg_dir)
 
     # load the test set
-    datas, testLoader = build_dataset_test(args.dataset, args.num_workers)
+    testLoader, class_dict_df = build_dataset_test(args.dataset, args.num_workers, sliding=args.sliding, none_gt=True)
 
     if args.checkpoint:
         if os.path.isfile(args.checkpoint):
@@ -95,37 +43,50 @@ def test_model(args):
             print("no checkpoint found at '{}'".format(args.checkpoint))
             raise FileNotFoundError("no checkpoint found at '{}'".format(args.checkpoint))
 
-    print(">>>>>>>>>>beginning testing>>>>>>>>>>>")
-    print("test set length: ", len(testLoader))
-    predict(args, testLoader, model)
+    # define loss function, respectively
+    criteria = build_loss(args, None, 255)
+
+    print(">>>>>>>>>>>beginning testing>>>>>>>>>>>")
+    if args.sliding:
+        val_loss, FWIoU, mIOU_val, per_class_iu, pa, cpa, mpa = predict_sliding(args, model.eval(),
+                                                                                testLoader=testLoader,
+                                                                                tile_size=
+                                                                                (args.tile_size, args.tile_size),
+                                                                                criteria=criteria, mode='validation')
+    else:
+        val_loss, FWIoU, mIOU_val, per_class_iu, pa, cpa, mpa = predict_whole(args, model, testLoader,
+                                                                              criteria, mode='validation')
+
+    t = PrettyTable(['label_index', 'class_name', 'class_iou'])
+    for index in range(class_dict_df.shape[0]):
+        t.add_row([class_dict_df['label_index'][index], class_dict_df['class_name'][index], PerMiou_set[index]])
+    print(t.get_string(title="Miou is {}".format(mIOU_val)))
 
 
-def parse_args():
-    parser = ArgumentParser(description='Efficient semantic segmentation')
-    # model and dataset
-    parser.add_argument('--model', default="ENet", help="model name: (default ENet)")
+if __name__ == '__main__':
+    parser = ArgumentParser()
+    parser.add_argument('--model', default="UNet", help="model name")
+    parser.add_argument('--sliding', action="store_true", default=False, help="Defalut use sliding predict mode")
     parser.add_argument('--dataset', default="paris", help="dataset: cityscapes or camvid")
-    parser.add_argument('--num_workers', type=int, default=4, help="the number of parallel threads")
+    parser.add_argument('--num_workers', type=int, default=1, help="the number of parallel threads")
     parser.add_argument('--batch_size', type=int, default=1,
                         help=" the batch_size is set to 1 when evaluating or testing")
+    parser.add_argument('--tile_size', type=int, default=512,
+                        help=" the tile_size is when evaluating or testing")
     parser.add_argument('--checkpoint', type=str,
-                        default="/media/ding/Study/graduate/code/Efficient-Segmentation-Networks/checkpoint/paris/ENetbs16gpu1_train/model_100.pth",
+                        default='/media/ding/Study/graduate/Segmentation_Torch/checkpoint/paris/UNetbs8gpu1_train/model_250.pth',
                         help="use the file to load the checkpoint for evaluating or testing ")
     parser.add_argument('--save_seg_dir', type=str, default="./outputs/",
                         help="saving path of prediction result")
+    parser.add_argument('--loss', type=str, default="CrossEntropyLoss2d",
+                        choices=['CrossEntropyLoss2d', 'ProbOhemCrossEntropy2d', 'CrossEntropyLoss2dLabelSmooth',
+                                 'LovaszSoftmax', 'FocalLoss2d'], help="choice loss for train or val in list")
     parser.add_argument('--cuda', default=True, help="run on CPU or GPU")
     parser.add_argument("--gpus", default="0", type=str, help="gpu ids (default: 0)")
     args = parser.parse_args()
 
-    return args
-
-
-if __name__ == '__main__':
-
-    args = parse_args()
     save_dirname = args.checkpoint.split('/')[-2] + '_' + args.checkpoint.split('/')[-1].split('.')[0]
-    args.save_seg_dir = os.path.join(args.save_seg_dir, args.dataset, 'predict', save_dirname)
-
+    args.save_seg_dir = os.path.join(args.save_seg_dir, args.dataset, 'predict_sliding', save_dirname)
 
     if args.dataset == 'cityscapes':
         args.classes = 19
@@ -133,8 +94,12 @@ if __name__ == '__main__':
         args.classes = 11
     elif args.dataset == 'paris':
         args.classes = 3
+    elif args.dataset == 'austin':
+        args.classes = 2
+    elif args.dataset == 'road':
+        args.classes = 2
     else:
         raise NotImplementedError(
             "This repository now supports two datasets: cityscapes and camvid, %s is not included" % args.dataset)
 
-    test_model(args)
+    main(args)
