@@ -9,7 +9,7 @@ from argparse import ArgumentParser
 from builders.model_builder import build_model
 from builders.dataset_builder import build_dataset_train, build_dataset_test
 from builders.loss_builder import build_loss
-from builders.validation_builder import predict_sliding
+from builders.validation_builder import predict_sliding, predict_whole
 from utils.utils import setup_seed, init_weight, netParams
 from utils.scheduler.lr_scheduler import PolyLR, WarmupPolyLR
 from utils.plot_log import draw_log
@@ -90,7 +90,7 @@ def main(args):
     print('mean and std: ', datas['mean'], datas['std'])
 
     # define loss function, respectively
-    criteria = build_loss(args, datas, ignore_label)
+    criteria = build_loss(args, None, ignore_label)
 
     # define optimization strategy
     if args.optim == 'sgd':
@@ -168,12 +168,17 @@ def main(args):
 
         # validation if mode==validation, predict with label; else mode==test predict without label.
         if epoch % args.val_epochs == 0 or epoch == 1 or epoch == args.max_epochs:
-            val_loss, FWIoU, mIOU_val, per_class_iu = predict_sliding(args, model, testLoader, args.input_size, criteria,
-                                                                      mode='validation')
+            if args.sliding:
+                val_loss, FWIoU, mIOU_val, per_class_iu, pa, cpa, mpa = predict_sliding(args, model, testLoader,
+                                                                                        args.input_size,
+                                                                                        criteria, mode='validation')
+            else:
+                val_loss, FWIoU, mIOU_val, per_class_iu = predict_whole()
             mIOU_val_list.append(mIOU_val)
             lossVal_list.append(val_loss.item())
             # record trainVal information
-            recorder.record_trainVal_log(logger, epoch, lr, lossTr, val_loss, FWIoU, mIOU_val, per_class_iu, class_dict_df)
+            recorder.record_trainVal_log(logger, epoch, lr, lossTr, val_loss, FWIoU, mIOU_val, per_class_iu, pa,
+                                         mpa, cpa, class_dict_df)
         else:
             # record train information
             recorder.record_train_log(logger, epoch, lr, lossTr)
@@ -197,8 +202,9 @@ def main(args):
         if early_stopping.early_stop:
             if not os.path.exists(model_file_name):
                 torch.save(state, model_file_name)
-                val_loss, FWIoU, mIOU_val, per_class_iu = predict_sliding(args, model, testLoader, args.input_size,
-                                                                          criteria, mode='validation')
+                val_loss, FWIoU, mIOU_val, per_class_iu, pa, cpa, mpa = predict_sliding(args, model, testLoader,
+                                                                                        args.input_size,
+                                                                                        criteria, mode='validation')
                 print(
                     "Epoch  %d\tlr= %.6f\tTrain Loss = %.4f\tVal Loss = %.4f\tmIOU(val) = %.4f\tper_class_iu= %s\n" % (
                         epoch, lr, lossTr, val_loss, mIOU_val, str(per_class_iu)))
