@@ -106,7 +106,7 @@ def predict_sliding(args, model, testLoader, tile_size, criteria, mode='predict'
 
 
 # model output is feature map without Up sampling
-def predict_whole(args, model, testLoader, tile_size, criteria, mode='predict'):
+def predict_whole(args, model, testLoader, criteria, mode='predict'):
     """
     model:  model
     image:  test image
@@ -119,7 +119,6 @@ def predict_whole(args, model, testLoader, tile_size, criteria, mode='predict'):
     pbar = tqdm(iterable=enumerate(testLoader), total=total_batches, desc='Predicting')
     for i, (image, gt, size, name) in pbar:
         with torch.no_grad():
-            image = torch.from_numpy(image)
             predict = model(image.cuda())
             if mode == 'validation':
                 gt = torch.from_numpy(gt[0]).long().cuda()
@@ -130,8 +129,7 @@ def predict_whole(args, model, testLoader, tile_size, criteria, mode='predict'):
 
             metric.addBatch(predict, gt)
             pa = metric.pixelAccuracy()
-            cpa = metric.classPixelAccuracy()
-            mpa = metric.meanPixelAccuracy()
+            mpa, cpa = metric.meanPixelAccuracy()
             Miou, PerMiou_set = metric.meanIntersectionOverUnion()
             FWIoU = metric.Frequency_Weighted_Intersection_over_Union()
 
