@@ -121,9 +121,11 @@ def predict_whole(args, model, testLoader, criteria, mode='predict'):
         with torch.no_grad():
             predict = model(image.cuda())
             if mode == 'validation':
-                gt = torch.from_numpy(gt[0]).long().cuda()
-                val_loss = criteria(predict, gt).cuda()
+                val_loss = criteria(predict, gt.long().cuda()).cuda()
 
+            gt = gt[0].numpy()
+            predict = predict.cpu().data[0].numpy().transpose(1, 2, 0)  # 通道位置变换(512,512,3)
+            predict = np.asarray(np.argmax(predict, axis=2), dtype=np.uint8)
             save_predict(predict, gt, name[0], args.dataset, args.save_seg_dir,
                          output_grey=False, output_color=True, gt_color=True)
 
